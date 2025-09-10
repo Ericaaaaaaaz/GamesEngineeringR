@@ -16,13 +16,20 @@
 #include "light.h"
 #include "triangle.h"
 
+#if defined(__AVX2__)
+#pragma message("AVX2 is enabled (__AVX2__ defined)")
+#else
+#pragma message("AVX2 is NOT enabled")
+#endif
+
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
 // Input Variables:
 // - renderer: The Renderer object used for drawing.
 // - mesh: Pointer to the Mesh object containing vertices and triangles to render.
 // - camera: Matrix representing the camera's transformation.
 // - L: Light object representing the lighting parameters.
-void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
+void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) 
+{
     // Combine perspective, camera, and world transformations for the mesh
     matrix p = renderer.perspective * camera * mesh->world;
 
@@ -56,9 +63,10 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L) {
 
         // Create a triangle object and render it
         triangle tri(t[0], t[1], t[2]);
-        tri.draw(renderer, L, mesh->ka, mesh->kd);
+        tri.drawSIMD(renderer, L, mesh->ka, mesh->kd);
     }
 }
+
 
 // Test scene function to demonstrate rendering with user-controlled transformations
 // No input variables
@@ -67,7 +75,7 @@ void sceneTest() {
     // create light source {direction, diffuse intensity, ambient intensity}
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.1f, 0.1f, 0.1f) };
     // camera is just a matrix
-    matrix camera = matrix::makeIdentity(); // Initialize the camera with identity matrix
+    matrix camera = matrix(); // Initialize the camera with identity matrix
 
     bool running = true; // Main loop control variable
 
@@ -121,7 +129,7 @@ matrix makeRandomRotation() {
     case 0: return matrix::makeRotateX(rng.getRandomFloat(0.f, 2.0f * M_PI));
     case 1: return matrix::makeRotateY(rng.getRandomFloat(0.f, 2.0f * M_PI));
     case 2: return matrix::makeRotateZ(rng.getRandomFloat(0.f, 2.0f * M_PI));
-    default: return matrix::makeIdentity();
+    default: return matrix();
     }
 }
 
@@ -191,7 +199,7 @@ void scene1() {
 // No input variables
 void scene2() {
     Renderer renderer;
-    matrix camera = matrix::makeIdentity();
+    matrix camera = matrix();
     Light L{ vec4(0.f, 1.f, 1.f, 0.f), colour(1.0f, 1.0f, 1.0f), colour(0.1f, 0.1f, 0.1f) };
 
     std::vector<Mesh*> scene;
@@ -264,10 +272,11 @@ void scene2() {
 int main() 
 {
     //Uncomment the desired scene function to run
-    //scene1();
-    scene2();
+    scene1();
+    //scene2();
     //sceneTest(); 
     
 
     return 0;
 }
+
