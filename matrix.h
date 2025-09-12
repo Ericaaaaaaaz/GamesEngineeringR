@@ -71,7 +71,7 @@ public:
     // Input Variables:
     // - mx: Another matrix to multiply with
     // Returns the resulting matrix
-   matrix operator * (const matrix& mx) const
+   /*matrix operator * (const matrix& mx) const
    {
         matrix ret;
         for (int row = 0; row < 4; ++row)
@@ -87,6 +87,37 @@ public:
         }
 
         return ret;
+   }*/
+
+   matrix operator * (const matrix& mx) const
+   {
+       matrix ret;
+
+       //row 0
+       ret.a[0] = a[0] * mx.a[0] + a[1] * mx.a[4] + a[2] * mx.a[8] + a[3] * mx.a[12];
+       ret.a[1] = a[0] * mx.a[1] + a[1] * mx.a[5] + a[2] * mx.a[9] + a[3] * mx.a[13];
+       ret.a[2] = a[0] * mx.a[2] + a[1] * mx.a[6] + a[2] * mx.a[10] + a[3] * mx.a[14];
+       ret.a[3] = a[0] * mx.a[3] + a[1] * mx.a[7] + a[2] * mx.a[11] + a[3] * mx.a[15];
+
+       //row 1
+       ret.a[4] = a[4] * mx.a[0] + a[5] * mx.a[4] + a[6] * mx.a[8] + a[7] * mx.a[12];
+       ret.a[5] = a[4] * mx.a[1] + a[5] * mx.a[5] + a[6] * mx.a[9] + a[7] * mx.a[13];
+       ret.a[6] = a[4] * mx.a[2] + a[5] * mx.a[6] + a[6] * mx.a[10] + a[7] * mx.a[14];
+       ret.a[7] = a[4] * mx.a[3] + a[5] * mx.a[7] + a[6] * mx.a[11] + a[7] * mx.a[15];
+
+       //row 2
+       ret.a[8] = a[8] * mx.a[0] + a[9] * mx.a[4] + a[10] * mx.a[8] + a[11] * mx.a[12];
+       ret.a[9] = a[8] * mx.a[1] + a[9] * mx.a[5] + a[10] * mx.a[9] + a[11] * mx.a[13];
+       ret.a[10] = a[8] * mx.a[2] + a[9] * mx.a[6] + a[10] * mx.a[10] + a[11] * mx.a[14];
+       ret.a[11] = a[8] * mx.a[3] + a[9] * mx.a[7] + a[10] * mx.a[11] + a[11] * mx.a[15];
+
+       //row 3
+       ret.a[12] = a[12] * mx.a[0] + a[13] * mx.a[4] + a[14] * mx.a[8] + a[15] * mx.a[12];
+       ret.a[13] = a[12] * mx.a[1] + a[13] * mx.a[5] + a[14] * mx.a[9] + a[15] * mx.a[13];
+       ret.a[14] = a[12] * mx.a[2] + a[13] * mx.a[6] + a[14] * mx.a[10] + a[15] * mx.a[14];
+       ret.a[15] = a[12] * mx.a[3] + a[13] * mx.a[7] + a[14] * mx.a[11] + a[15] * mx.a[15];
+
+       return ret;
    }
 
 
@@ -134,10 +165,12 @@ public:
     {
         matrix m;
         //m.identity();
-        m.a[0] = std::cos(aRad);
-        m.a[1] = -std::sin(aRad);
-        m.a[4] = std::sin(aRad);
-        m.a[5] = std::cos(aRad);
+        float ct = cos(aRad);
+        float st = sin(aRad);
+        m.a[0] = ct;
+        m.a[1] = -st;
+        m.a[4] = st;
+        m.a[5] = ct;
         return m;
     }
 
@@ -149,10 +182,12 @@ public:
     {
         matrix m;
         //m.identity();
-        m.a[5] = std::cos(aRad);
-        m.a[6] = -std::sin(aRad);
-        m.a[9] = std::sin(aRad);
-        m.a[10] = std::cos(aRad);
+        float ct = cos(aRad);
+        float st = sin(aRad);
+        m.a[5] = ct;
+        m.a[6] = -st;
+        m.a[9] = st;
+        m.a[10] = ct;
         return m;
     }
 
@@ -164,10 +199,12 @@ public:
     {
         matrix m;
         //m.identity();
-        m.a[0] = std::cos(aRad);
-        m.a[2] = std::sin(aRad);
-        m.a[8] = -std::sin(aRad);
-        m.a[10] = std::cos(aRad);
+        float ct = cos(aRad);
+        float st = sin(aRad);
+        m.a[0] = ct;
+        m.a[2] = st;
+        m.a[8] = -st;
+        m.a[10] = ct;
         return m;
     }
 

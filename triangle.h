@@ -121,8 +121,6 @@ public:
         return (a1 * alpha) + (a2 * beta) + (a3 * gamma);
     }
 
-    
-
     void drawSIMD(Renderer& renderer, Light& L, float ka, float kd)
     {
         vec2D minV, maxV;
@@ -140,6 +138,8 @@ public:
         __m256 invAreaVec = _mm256_broadcast_ss(&invArea);
         __m256 one = _mm256_set1_ps(1.0f);
         __m256 zero = _mm256_set1_ps(0.0f);
+        __m256 minDepth = _mm256_set1_ps(0.01f);
+
 
         //vertex positions for barycentric calculations
         __m256 v0x = _mm256_broadcast_ss(&v[0].p[0]);
@@ -155,113 +155,219 @@ public:
         __m256 v2z = _mm256_broadcast_ss(&v[2].p[2]);
 
         //light direction
-        __m256 light_x = _mm256_broadcast_ss(&L.omega_i[0]);
-        __m256 light_y = _mm256_broadcast_ss(&L.omega_i[1]);
-        __m256 light_z = _mm256_broadcast_ss(&L.omega_i[2]);
+        __m256 lightX = _mm256_broadcast_ss(&L.omega_i[0]);
+        __m256 lightY = _mm256_broadcast_ss(&L.omega_i[1]);
+        __m256 lightZ = _mm256_broadcast_ss(&L.omega_i[2]);
 
-        const __m256 lightIntensityR = _mm256_broadcast_ss(&L.L[colour::RED]);
-        const __m256 lightIntensityG = _mm256_broadcast_ss(&L.L[colour::GREEN]);
-        const __m256 lightIntensityB = _mm256_broadcast_ss(&L.L[colour::BLUE]);
+        //precompute normal components for SIMD
+        __m256 n0x = _mm256_broadcast_ss(&v[0].normal[0]);
+        __m256 n0y = _mm256_broadcast_ss(&v[0].normal[1]);
+        __m256 n0z = _mm256_broadcast_ss(&v[0].normal[2]);
+        __m256 n1x = _mm256_broadcast_ss(&v[1].normal[0]);
+        __m256 n1y = _mm256_broadcast_ss(&v[1].normal[1]);
+        __m256 n1z = _mm256_broadcast_ss(&v[1].normal[2]);
+        __m256 n2x = _mm256_broadcast_ss(&v[2].normal[0]);
+        __m256 n2y = _mm256_broadcast_ss(&v[2].normal[1]);
+        __m256 n2z = _mm256_broadcast_ss(&v[2].normal[2]);
+
+
+        //lighting constants
+        const __m256 kdVec = _mm256_set1_ps(kd);
+
+        const __m256 lightIntensityR = _mm256_set1_ps(L.L[colour::RED]);
+        const __m256 lightIntensityG = _mm256_set1_ps(L.L[colour::GREEN]);
+        const __m256 lightIntensityB = _mm256_set1_ps(L.L[colour::BLUE]);
 
         //ambient light, separated by channel
-        const __m256 ambientLightR = _mm256_broadcast_ss(&L.ambient[colour::RED]);
-        const __m256 ambientLightG = _mm256_broadcast_ss(&L.ambient[colour::GREEN]);
-        const __m256 ambientLightB = _mm256_broadcast_ss(&L.ambient[colour::BLUE]);
-        //lighting constants
-        __m256 kd_vec = _mm256_set1_ps(kd);
+        const __m256 ambientLightR = _mm256_set1_ps(L.ambient[colour::RED]);
+        const __m256 ambientLightG = _mm256_set1_ps(L.ambient[colour::GREEN]);
+        const __m256 ambientLightB = _mm256_set1_ps(L.ambient[colour::BLUE]);
+
+        //colour components for SIMD
+        const __m256 c0r = _mm256_set1_ps(v[0].rgb[colour::RED]);
+        const __m256 c0g = _mm256_set1_ps(v[0].rgb[colour::GREEN]);
+        const __m256 c0b = _mm256_set1_ps(v[0].rgb[colour::BLUE]);
+        const __m256 c1r = _mm256_set1_ps(v[1].rgb[colour::RED]);
+        const __m256 c1g = _mm256_set1_ps(v[1].rgb[colour::GREEN]);
+        const __m256 c1b = _mm256_set1_ps(v[1].rgb[colour::BLUE]);
+        const __m256 c2r = _mm256_set1_ps(v[2].rgb[colour::RED]);
+        const __m256 c2g = _mm256_set1_ps(v[2].rgb[colour::GREEN]);
+        const __m256 c2b = _mm256_set1_ps(v[2].rgb[colour::BLUE]);
+
+        const __m256 vec255 = _mm256_set1_ps(255.0f);
+
+        //create x offset pattern for 8 pixels
+        const __m256 xOffset = _mm256_set_ps(7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f, 0.0f);
 
         for (int y = minY; y < maxY; ++y)
         {
             __m256 py = _mm256_set1_ps((float)y);
 
-            // Process 8 pixels at a time
+            //process 8 pixels at a time
             int x = minX;
-            for (; x <= maxX - 8; x += 8)
+
+            //align to 8-pixel boundary for better performance
+            int alignedMinX = (minX + 7) & ~7;
+
+            //handle unaligned start pixels with scalar code
+            for (; x < alignedMinX && x < maxX; ++x)
             {
-                //create x coordinates for 8 pixels
-                __m256 px = _mm256_set_ps(x + 7.0f, x + 6.0f, x + 5.0f, x + 4.0f,
-                    x + 3.0f, x + 2.0f, x + 1.0f, x + 0.0f);
-
-                //calculate barycentric coordinates for 8 pixels
-                __m256 alpha = _mm256_mul_ps(getCSIMD(v0x, v0y, v1x, v1y, px, py), invAreaVec);
-                __m256 beta = _mm256_mul_ps(getCSIMD(v1x, v1y, v2x, v2y, px, py), invAreaVec);
-                __m256 gamma = _mm256_sub_ps(_mm256_sub_ps(one, alpha), beta);
-
-                //check if pixels are inside triangle
-                __m256 inside = _mm256_and_ps(_mm256_cmp_ps(alpha, zero, _CMP_GE_OQ),
-                    _mm256_and_ps(_mm256_cmp_ps(beta, zero, _CMP_GE_OQ),
-                        _mm256_cmp_ps(gamma, zero, _CMP_GE_OQ)));
-
-                //skip if no pixels are inside
-                int mask = _mm256_movemask_ps(inside);
-                if (mask == 0) continue;
-
-                //interpolate depth
-                __m256 depth = _mm256_add_ps(_mm256_mul_ps(beta, v0z),
-                    _mm256_add_ps(_mm256_mul_ps(gamma, v1z),
-                        _mm256_mul_ps(alpha, v2z)));
-
-                //process each pixel that passed the test
-                float depths[8], alphas[8], betas[8], gammas[8];
-                _mm256_storeu_ps(depths, depth);
-                _mm256_storeu_ps(alphas, alpha);
-                _mm256_storeu_ps(betas, beta);
-                _mm256_storeu_ps(gammas, gamma);
-
-                for (int i = 0; i < 8; i++)
+                float alpha, beta, gamma;
+                if (getCoordinates(vec2D((float)x, (float)y), alpha, beta, gamma))
                 {
-                    if (mask & (1 << i))
+                    float depth = interpolate(beta, gamma, alpha, v[0].p[2], v[1].p[2], v[2].p[2]);
+                    if (renderer.zbuffer(x, y) > depth && depth > 0.01f)
                     {
-                        int px_coord = x + i;
-
-                        // Z-buffer test
-                        if (renderer.zbuffer(px_coord, y) > depths[i] && depths[i] > 0.01f)
-                        {
-                            // Interpolate normal (not vectorized for simplicity)
-                            vec4 normal = interpolate(betas[i], gammas[i], alphas[i],
-                                v[0].normal, v[1].normal, v[2].normal);
-                            normal.normalise();
-
-                            // Shading calculation
-                            float dot = max(vec4::dot(L.omega_i, normal), 0.0f);
-                            colour c = interpolate(betas[i], gammas[i], alphas[i],
-                                v[0].rgb, v[1].rgb, v[2].rgb);
-                            c.clampColour();
-
-                            colour a = (c * kd) * (L.L * dot + (L.ambient * kd));
-
-                            unsigned char r, g, b;
-                            a.toRGB(r, g, b);
-
-                            renderer.canvas.draw(px_coord, y, r, g, b);
-                            renderer.zbuffer(px_coord, y) = depths[i];
-                        }
+                        vec4 normal = interpolate(beta, gamma, alpha, v[0].normal, v[1].normal, v[2].normal);
+                        normal.normalise();
+                        float dot = max(vec4::dot(L.omega_i, normal), 0.0f);
+                        colour c = interpolate(beta, gamma, alpha, v[0].rgb, v[1].rgb, v[2].rgb);
+                        c.clampColour();
+                        colour a = (c * kd) * (L.L * dot + (L.ambient * kd));
+                        unsigned char r, g, b;
+                        a.toRGB(r, g, b);
+                        renderer.canvas.draw(x, y, r, g, b);
+                        renderer.zbuffer(x, y) = depth;
                     }
                 }
             }
 
-            // Handle remaining pixels (less than 8)
+            //process 8 pixels at once
+            for (; x <= maxX - 8; x += 8)
+            {
+                //create x coordinates for 8 pixels
+                const __m256 px = _mm256_add_ps(_mm256_set1_ps((float)x), xOffset);
+
+                //calculate barycentric coordinates for 8 pixels
+                const __m256 alpha = _mm256_mul_ps(getCSIMD(v0x, v0y, v1x, v1y, px, py), invAreaVec);
+                const __m256 beta = _mm256_mul_ps(getCSIMD(v1x, v1y, v2x, v2y, px, py), invAreaVec);
+                const __m256 gamma = _mm256_sub_ps(_mm256_sub_ps(one, alpha), beta);
+
+                //check if pixels are inside triangle
+                const __m256 insideAlpha = _mm256_cmp_ps(alpha, zero, _CMP_GE_OQ);
+                const __m256 insideBeta = _mm256_cmp_ps(beta, zero, _CMP_GE_OQ);
+                const __m256 insideGamma = _mm256_cmp_ps(gamma, zero, _CMP_GE_OQ);
+                const __m256 inside = _mm256_and_ps(insideAlpha, _mm256_and_ps(insideBeta, insideGamma));
+
+                //get mask of which pixels are inside
+                const int mask = _mm256_movemask_ps(inside);
+
+                //skip if no pixels are inside
+                if (mask == 0) 
+                    continue; 
+
+                //interpolate depth for all 8 pixels
+                const __m256 depth = _mm256_add_ps(_mm256_mul_ps(beta, v0z),_mm256_add_ps(_mm256_mul_ps(gamma, v1z),_mm256_mul_ps(alpha, v2z)));
+
+                //check depth validity
+                const __m256 depthValid = _mm256_cmp_ps(depth, minDepth, _CMP_GT_OQ);
+
+                //load z-buffer values for comparison
+                const __m256i v_offsets = _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
+                const __m256 zbufferDepths = _mm256_i32gather_ps(&renderer.zbuffer(x, y), v_offsets, sizeof(float));
+
+                //z-buffer test
+                const __m256 depthTest = _mm256_cmp_ps(zbufferDepths, depth, _CMP_GT_OQ);
+
+                //combine all tests
+                const __m256 shouldRender = _mm256_and_ps(inside, _mm256_and_ps(depthValid, depthTest));
+                const int renderMask = _mm256_movemask_ps(shouldRender);
+
+                if (renderMask == 0) continue;
+
+                //vectorized normal interpolation
+                __m256 nx = _mm256_add_ps(_mm256_mul_ps(beta, n0x),_mm256_add_ps(_mm256_mul_ps(gamma, n1x),_mm256_mul_ps(alpha, n2x)));
+                __m256 ny = _mm256_add_ps(_mm256_mul_ps(beta, n0y),_mm256_add_ps(_mm256_mul_ps(gamma, n1y),_mm256_mul_ps(alpha, n2y)));
+                __m256 nz = _mm256_add_ps(_mm256_mul_ps(beta, n0z),_mm256_add_ps(_mm256_mul_ps(gamma, n1z),_mm256_mul_ps(alpha, n2z)));
+
+                //normalize normals (approximate)
+                const __m256 invNorm = _mm256_rsqrt_ps(_mm256_add_ps(_mm256_mul_ps(nx, nx),_mm256_add_ps(_mm256_mul_ps(ny, ny),_mm256_mul_ps(nz, nz))));
+
+                nx = _mm256_mul_ps(nx, invNorm);
+                ny = _mm256_mul_ps(ny, invNorm);
+                nz = _mm256_mul_ps(nz, invNorm);
+
+                //compute dot product with light
+                __m256 dotProduct = _mm256_add_ps(_mm256_mul_ps(lightX, nx),_mm256_add_ps(_mm256_mul_ps(lightY, ny),_mm256_mul_ps(lightZ, nz)));
+                dotProduct = _mm256_max_ps(dotProduct, zero);
+
+                //interpolate colours
+                __m256 cr = _mm256_add_ps(_mm256_mul_ps(beta, c0r),_mm256_add_ps(_mm256_mul_ps(gamma, c1r),_mm256_mul_ps(alpha, c2r)));
+                __m256 cg = _mm256_add_ps(_mm256_mul_ps(beta, c0g),_mm256_add_ps(_mm256_mul_ps(gamma, c1g),_mm256_mul_ps(alpha, c2g)));
+                __m256 cb = _mm256_add_ps(_mm256_mul_ps(beta, c0b),_mm256_add_ps(_mm256_mul_ps(gamma, c1b),_mm256_mul_ps(alpha, c2b)));
+
+                const __m256 diffuseTermR = _mm256_mul_ps(lightIntensityR, dotProduct);
+                const __m256 diffuseTermG = _mm256_mul_ps(lightIntensityG, dotProduct);
+                const __m256 diffuseTermB = _mm256_mul_ps(lightIntensityB, dotProduct);
+
+                const __m256 ambientTermR = _mm256_mul_ps(ambientLightR, kdVec);
+                const __m256 ambientTermG = _mm256_mul_ps(ambientLightG, kdVec);
+                const __m256 ambientTermB = _mm256_mul_ps(ambientLightB, kdVec);
+
+                const __m256 lightContributionR = _mm256_add_ps(diffuseTermR, ambientTermR);
+                const __m256 lightContributionG = _mm256_add_ps(diffuseTermG, ambientTermG);
+                const __m256 lightContributionB = _mm256_add_ps(diffuseTermB, ambientTermB);
+
+                const __m256 finalFactorR = _mm256_mul_ps(kdVec, lightContributionR);
+                const __m256 finalFactorG = _mm256_mul_ps(kdVec, lightContributionG);
+                const __m256 finalFactorB = _mm256_mul_ps(kdVec, lightContributionB);
+
+                cr = _mm256_mul_ps(cr, finalFactorR);
+                cg = _mm256_mul_ps(cg, finalFactorG);
+                cb = _mm256_mul_ps(cb, finalFactorB);
+
+                cr = _mm256_min_ps(_mm256_max_ps(cr, zero), one);
+                cg = _mm256_min_ps(_mm256_max_ps(cg, zero), one);
+                cb = _mm256_min_ps(_mm256_max_ps(cb, zero), one);
+
+                cr = _mm256_mul_ps(cr, vec255);
+                cg = _mm256_mul_ps(cg, vec255);
+                cb = _mm256_mul_ps(cb, vec255);
+
+                const __m256i writeMask = _mm256_castps_si256(shouldRender);
+
+                _mm256_maskstore_ps(&renderer.zbuffer(x, y), writeMask, depth);
+
+                if (renderMask != 0)
+                {
+                    //store the calculated colours into temporary arrays
+                    float rArray[8], gArray[8], bArray[8];
+                    _mm256_storeu_ps(rArray, cr);
+                    _mm256_storeu_ps(gArray, cg);
+                    _mm256_storeu_ps(bArray, cb);
+
+                    //loop through the 8 pixels and draw only the ones that passed
+                    for (int i = 0; i < 8; ++i)
+                    {
+                        if (renderMask & (1 << i))
+                        {
+                            renderer.canvas.draw(x + i, y,
+                                (unsigned char)rArray[i],
+                                (unsigned char)gArray[i],
+                                (unsigned char)bArray[i]);
+                        }
+                    }
+                }
+
+            }
+
+            //handle remaining pixels
             for (; x < maxX; ++x)
             {
                 float alpha, beta, gamma;
                 if (getCoordinates(vec2D((float)x, (float)y), alpha, beta, gamma))
                 {
                     float depth = interpolate(beta, gamma, alpha, v[0].p[2], v[1].p[2], v[2].p[2]);
-
                     if (renderer.zbuffer(x, y) > depth && depth > 0.01f)
                     {
                         vec4 normal = interpolate(beta, gamma, alpha, v[0].normal, v[1].normal, v[2].normal);
                         normal.normalise();
-
                         float dot = max(vec4::dot(L.omega_i, normal), 0.0f);
                         colour c = interpolate(beta, gamma, alpha, v[0].rgb, v[1].rgb, v[2].rgb);
                         c.clampColour();
-
                         colour a = (c * kd) * (L.L * dot + (L.ambient * kd));
-
                         unsigned char r, g, b;
                         a.toRGB(r, g, b);
-
                         renderer.canvas.draw(x, y, r, g, b);
                         renderer.zbuffer(x, y) = depth;
                     }
@@ -269,6 +375,8 @@ public:
             }
         }
     }
+
+    
     // Draw the triangle on the canvas
     // Input Variables:
     // - renderer: Renderer object for drawing
