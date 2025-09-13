@@ -5,6 +5,7 @@
 #include "GamesEngineeringBase.h" // Include the GamesEngineeringBase header
 #include <algorithm>
 #include <chrono>
+#include <vector>
 
 #include <cmath>
 #include "matrix.h"
@@ -22,6 +23,121 @@
 #pragma message("AVX2 is NOT enabled")
 #endif
 
+struct TriInstance {
+    triangle tri;
+    float kd;   // per-triangle material (diffuse)
+};
+
+// Transform a mesh & append its triangles (screen-space) to 'out'
+static void gatherFromMesh(Renderer& renderer,
+    Mesh* mesh,
+    const matrix& camera,
+    std::vector<TriInstance>& out)
+{
+    matrix p = renderer.perspective * camera * mesh->world;
+    out.reserve(out.size() + mesh->triangles.size());
+
+    for (const triIndices& ind : mesh->triangles) {
+        Vertex t[3];
+        for (unsigned i = 0; i < 3; ++i) {
+            t[i].p = p * mesh->vertices[ind.v[i]].p;
+            t[i].p.divideW();
+
+            // normals to world space
+            t[i].normal = mesh->world * mesh->vertices[ind.v[i]].normal;
+            t[i].normal.normalise();
+
+            // NDC -> screen
+            t[i].p[0] = (t[i].p[0] + 1.f) * 0.5f * (float)renderer.canvas.getWidth();
+            t[i].p[1] = (t[i].p[1] + 1.f) * 0.5f * (float)renderer.canvas.getHeight();
+            t[i].p[1] = renderer.canvas.getHeight() - t[i].p[1];
+
+            t[i].rgb = mesh->vertices[ind.v[i]].rgb;
+        }
+
+        // very cheap Z-clip
+        if (fabs(t[0].p[2]) > 1.0f || fabs(t[1].p[2]) > 1.0f || fabs(t[2].p[2]) > 1.0f)
+            continue;
+
+        out.push_back(TriInstance{ triangle(t[0], t[1], t[2]), mesh->kd });
+    }
+}
+
+// One pool submission for the whole frame.
+// Uses row-bands; each task draws ONLY its band across all triangles.
+static void drawTrianglesSIMD_Parallel(
+    Renderer& renderer,
+    std::vector<TriInstance>& tris,
+    Light& L)
+{
+    using tri_internal::RowPool;
+
+    if (tris.empty()) return;
+
+    const int H = renderer.canvas.getHeight();
+    const int bandRows = (H >= 720 ? 32 : 16);
+    const int numBands = (H + bandRows - 1) / bandRows;
+
+    struct TriJob {
+        triangle* t;
+        TriSIMDPre pre;
+        int y0, y1;
+        int minX, maxX;
+        float kd;
+    };
+
+    // Precompute per-triangle data once
+    std::vector<TriJob> jobs;
+    jobs.reserve(tris.size());
+    for (auto& inst : tris) {
+        auto& tri = inst.tri;
+        vec2D minV, maxV;
+        tri.getBoundsWindow(renderer.canvas, minV, maxV);
+        const int y0 = (int)minV.y, y1 = (int)std::ceil(maxV.y);
+        const int minX = (int)minV.x, maxX = (int)std::ceil(maxV.x);
+        if (y0 >= y1 || minX >= maxX) continue;
+
+        TriJob j;
+        j.t = &tri;
+        tri.buildPre(L, inst.kd, j.pre);  // kd baked into pre (SIMD)
+        j.pre.minX = minX;
+        j.pre.maxX = maxX;
+        j.y0 = y0; j.y1 = y1;
+        j.minX = minX; j.maxX = maxX;
+        j.kd = inst.kd;                   // scalar path needs kd too
+        jobs.push_back(j);
+    }
+    if (jobs.empty()) return;
+
+    // Bin triangles into row bands to avoid scanning all tris per task
+    std::vector<std::vector<int>> band2tris(numBands);
+    for (int i = 0; i < (int)jobs.size(); ++i) {
+        const int b0 = max(0, jobs[i].y0 / bandRows);
+        const int b1 = min(numBands - 1, (jobs[i].y1 - 1) / bandRows);
+        for (int b = b0; b <= b1; ++b) band2tris[b].push_back(i);
+    }
+
+    RowPool::instance().parallel_rows(
+        /*globalY0=*/0,
+        /*globalY1=*/H,
+        /*rowsPerTask=*/bandRows,
+        /*task*/ [&](int y0, int y1)
+        {
+            const int band = y0 / bandRows;
+            const auto& list = band2tris[band];
+            for (int idx : list) {
+                const TriJob& j = jobs[idx];
+                const int ys = max(y0, j.y0);
+                const int ye = min(y1, j.y1);
+                if (ys >= ye) continue;
+                // NOTE: ka is unused in SIMD path; pass 0.f
+                j.t->drawSIMDrows(renderer, j.pre, L, /*ka*/0.f, /*kd*/j.kd, ys, ye);
+            }
+        },
+        /*useThreads=*/0 // 0 = pool default cap (your 11)
+    );
+}
+
 // Main rendering function that processes a mesh, transforms its vertices, applies lighting, and draws triangles on the canvas.
 // Input Variables:
 // - renderer: The Renderer object used for drawing.
@@ -32,6 +148,9 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
 {
     // Combine perspective, camera, and world transformations for the mesh
     matrix p = renderer.perspective * camera * mesh->world;
+
+    std::vector<TriInstance> triangles;
+    triangles.reserve(mesh->triangles.size());
 
     // Iterate through all triangles in the mesh
     for (triIndices& ind : mesh->triangles) 
@@ -61,10 +180,10 @@ void render(Renderer& renderer, Mesh* mesh, matrix& camera, Light& L)
         // Clip triangles with Z-values outside [-1, 1]
         if (fabs(t[0].p[2]) > 1.0f || fabs(t[1].p[2]) > 1.0f || fabs(t[2].p[2]) > 1.0f) continue;
 
-        // Create a triangle object and render it
-        triangle tri(t[0], t[1], t[2]);
-        tri.drawSIMD(renderer, L, mesh->ka, mesh->kd);
+        triangles.push_back(TriInstance{ triangle(t[0], t[1], t[2]), mesh->kd });
     }
+    if (!triangles.empty())
+        drawTrianglesSIMD_Parallel(renderer, triangles, L);
 }
 
 
@@ -186,8 +305,14 @@ void scene1() {
             }
         }
 
-        for (auto& m : scene)
-            render(renderer, m, camera, L);
+        std::vector<TriInstance> all_triangles_for_frame;
+        for (auto& m : scene) {
+            gatherFromMesh(renderer, m, camera, all_triangles_for_frame);
+        }
+
+        if (!all_triangles_for_frame.empty()) {
+            drawTrianglesSIMD_Parallel(renderer, all_triangles_for_frame, L);
+        }
         renderer.present();
     }
 
@@ -258,8 +383,14 @@ void scene2() {
 
         if (renderer.canvas.keyPressed(VK_ESCAPE)) break;
 
-        for (auto& m : scene)
-            render(renderer, m, camera, L);
+        std::vector<TriInstance> all_triangles_for_frame;
+        for (auto& m : scene) {
+            gatherFromMesh(renderer, m, camera, all_triangles_for_frame);
+        }
+
+        if (!all_triangles_for_frame.empty()) {
+            drawTrianglesSIMD_Parallel(renderer, all_triangles_for_frame, L);
+        }
         renderer.present();
     }
 

@@ -97,6 +97,8 @@ namespace GamesEngineeringBase
 			return DefWindowProc(hwnd, msg, wParam, lParam);
 		}
 
+		
+
 		// Updates the internal mouse coordinates
 		void updateMouse(int x, int y)
 		{
@@ -446,6 +448,24 @@ namespace GamesEngineeringBase
 			HRESULT comResult;
 			comResult = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 		}
+
+		inline unsigned int bytesPerPixel() const
+		{
+			return 3u;
+		}
+
+
+		inline unsigned char* rowPtr(int y)
+		{
+			if (y < 0)
+				y = 0;
+
+			if (y >= (int)height)
+				y = (int)height - 1;
+
+			return image + (size_t)y * width * bytesPerPixel();
+		}
+
 
 		// Processes input messages
 		void checkInput()
